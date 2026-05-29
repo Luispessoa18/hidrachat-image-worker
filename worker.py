@@ -165,6 +165,7 @@ NEGATIVE_PROMPT = (
     "signature, extra limbs, disfigured, deformed"
 )
 
+MIN_PNG_BYTES = 1024
 PIPELINE: Any | None = None
 
 
@@ -256,6 +257,47 @@ def warmup_pipeline(cfg: Config) -> None:
     print("Pipeline pronto na GPU.\n")
 
 
+def truncate_prompt_for_pipeline(pipe: Any, prompt: str) -> str:
+    tokenizer = getattr(pipe, "tokenizer", None)
+    if tokenizer is None:
+        return prompt
+
+    max_length = min(int(getattr(tokenizer, "model_max_length", 77)), 77)
+    encoded = tokenizer(
+        prompt,
+        truncation=True,
+        max_length=max_length,
+        return_overflowing_tokens=False,
+    )
+    input_ids = encoded.get("input_ids")
+    if not input_ids:
+        return prompt
+
+    truncated = tokenizer.decode(
+        input_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    ).strip()
+
+    if truncated and truncated != prompt:
+        print(f"  prompt truncado para {max_length} tokens CLIP")
+    return truncated or prompt
+
+
+def png_bytes_from_image(image: Any, width: int, height: int) -> bytes:
+    if getattr(image, "size", None) != (width, height):
+        raise RuntimeError(f"imagem gerada com tamanho inesperado: {getattr(image, 'size', None)}")
+
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    data = buf.getvalue()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("saida gerada nao e um PNG valido")
+    if len(data) < MIN_PNG_BYTES:
+        raise RuntimeError(f"PNG gerado pequeno demais ({len(data)} bytes)")
+    return data
+
+
 def generate_image(cfg: Config, prompt: str, constraints: dict) -> bytes:
     width  = int(constraints.get("width",  512))
     height = int(constraints.get("height", 512))
@@ -267,10 +309,11 @@ def generate_image(cfg: Config, prompt: str, constraints: dict) -> bytes:
     suffix = STYLE_SUFFIXES.get(style, "")
     full_prompt = f"{prompt}, {suffix}" if suffix else prompt
 
+    pipe = load_pipeline(cfg)
+    full_prompt = truncate_prompt_for_pipeline(pipe, full_prompt)
+
     print(f"  prompt: {full_prompt[:80]}...")
     print(f"  size: {width}x{height}  steps: {steps}  style: {style}")
-
-    pipe = load_pipeline(cfg)
     generator = None
     if seed is not None:
         import torch
@@ -287,9 +330,7 @@ def generate_image(cfg: Config, prompt: str, constraints: dict) -> bytes:
         generator=generator,
     ).images[0]
 
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return buf.getvalue()
+    return png_bytes_from_image(image, width, height)
 
 
 # ─── Register & heartbeat ─────────────────────────────────────────────────────
@@ -373,7 +414,7 @@ def main() -> None:
                 img_data = generate_image(cfg, prompt, constraints)
                 elapsed  = int((time.perf_counter() - started) * 1000)
                 b64      = base64.b64encode(img_data).decode()
-                print(f"[DONE] {len(img_data)//1024} KB  {elapsed}ms")
+                print(f"[DONE] {len(img_data)} bytes ({len(img_data) / 1024:.1f} KB)  {elapsed}ms")
                 post_json(
                     f"{cfg.root_url}/job/submit",
                     {

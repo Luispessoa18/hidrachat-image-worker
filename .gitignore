@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+models/
+output/
+stable-diffusion.cpp/
+*.dll
+*.exe
+ggml.txt
+stable-diffusion.cpp.txt
