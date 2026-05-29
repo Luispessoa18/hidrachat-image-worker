@@ -33,6 +33,7 @@ def configure(
     region: str = "colab",
     local_files_only: bool = True,
     preload_model: bool = True,
+    warmup_model: bool = True,
 ) -> None:
     if email:
         os.environ["HIDRACHAT_WORKER_EMAIL"] = email
@@ -48,6 +49,7 @@ def configure(
     os.environ["HIDRACHAT_REGION"] = region
     os.environ["HIDRACHAT_LOCAL_FILES_ONLY"] = "1" if local_files_only else "0"
     os.environ["HIDRACHAT_PRELOAD_MODEL"] = "1" if preload_model else "0"
+    os.environ["HIDRACHAT_WARMUP_MODEL"] = "1" if warmup_model else "0"
 
 
 def start(**kwargs: Any) -> None:
@@ -69,6 +71,7 @@ def main() -> None:
     parser.add_argument("--region", default=os.getenv("HIDRACHAT_REGION", "colab"))
     parser.add_argument("--online-model", action="store_true", help="Permite baixar/cachear modelo durante o start")
     parser.add_argument("--no-preload", action="store_true", help="Registra antes de carregar o modelo")
+    parser.add_argument("--no-warmup", action="store_true", help="Nao roda geracao curta antes do registro")
     args = parser.parse_args()
 
     if not args.email:
@@ -85,6 +88,7 @@ def main() -> None:
         region=args.region,
         local_files_only=not args.online_model,
         preload_model=not args.no_preload,
+        warmup_model=not args.no_warmup,
     )
 
 

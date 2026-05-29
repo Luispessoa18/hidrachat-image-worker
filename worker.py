@@ -15,6 +15,7 @@ Variáveis de ambiente:
   HIDRACHAT_TORCH_DTYPE   auto/float16/bfloat16/float32 (default: auto)
   HIDRACHAT_LOCAL_FILES_ONLY  1 para usar apenas modelo local/cache
   HIDRACHAT_PRELOAD_MODEL     1 para carregar modelo antes de registrar
+  HIDRACHAT_WARMUP_MODEL      1 para rodar uma geracao curta antes de registrar
   HIDRACHAT_REGION        Região do worker (default: local)
 """
 
@@ -53,6 +54,7 @@ class Config:
     torch_dtype:  str   = os.getenv("HIDRACHAT_TORCH_DTYPE", "auto")
     local_files_only: bool = os.getenv("HIDRACHAT_LOCAL_FILES_ONLY", "0") == "1"
     preload_model: bool = os.getenv("HIDRACHAT_PRELOAD_MODEL", "0") == "1"
+    warmup_model: bool = os.getenv("HIDRACHAT_WARMUP_MODEL", "0") == "1"
     ram_gb:       float = float(os.getenv("HIDRACHAT_RAM_GB", "8"))
 
 
@@ -232,6 +234,28 @@ def load_pipeline(cfg: Config) -> Any:
     return PIPELINE
 
 
+def warmup_pipeline(cfg: Config) -> None:
+    pipe = load_pipeline(cfg)
+    print("Aquecendo pipeline na GPU antes do registro...")
+    try:
+        import torch
+
+        generator = torch.Generator(device=cfg.device).manual_seed(1)
+    except Exception:
+        generator = None
+
+    pipe(
+        prompt="warmup",
+        negative_prompt=NEGATIVE_PROMPT,
+        width=256,
+        height=256,
+        num_inference_steps=1,
+        guidance_scale=1.0,
+        generator=generator,
+    ).images[0]
+    print("Pipeline pronto na GPU.\n")
+
+
 def generate_image(cfg: Config, prompt: str, constraints: dict) -> bytes:
     width  = int(constraints.get("width",  512))
     height = int(constraints.get("height", 512))
@@ -319,6 +343,8 @@ def main() -> None:
     if cfg.preload_model:
         load_pipeline(cfg)
         print("Modelo carregado antes do registro.\n")
+    if cfg.warmup_model:
+        warmup_pipeline(cfg)
 
     worker_id = register(cfg)
     print(f"Worker registrado: {worker_id}\n")

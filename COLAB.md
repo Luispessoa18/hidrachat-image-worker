@@ -22,6 +22,7 @@ Use runtime com GPU: `Runtime > Change runtime type > T4/A100 GPU`.
 %env HIDRACHAT_WORKER_NAME=image-worker-colab
 %env HIDRACHAT_LOCAL_FILES_ONLY=1
 %env HIDRACHAT_PRELOAD_MODEL=1
+%env HIDRACHAT_WARMUP_MODEL=1
 ```
 
 ```python
