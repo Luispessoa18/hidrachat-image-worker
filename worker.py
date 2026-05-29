@@ -1,32 +1,34 @@
 """
-HidraImg Worker — gera imagens com stable-diffusion.cpp
+HidraImg Worker — gera imagens com HuggingFace Diffusers/PyTorch
 Registra como worker_type=image e processa apenas jobs image_generation.
 
 Variáveis de ambiente:
   HIDRACHAT_ROOT_URL      URL do servidor (default: https://hidrachat.cloud)
   HIDRACHAT_WORKER_NAME   Nome deste worker
   HIDRACHAT_WORKER_EMAIL  Email da conta dona do worker
-  HIDRACHAT_SD_BIN        Caminho para o binário 'sd' do stable-diffusion.cpp
-  HIDRACHAT_MODELS_DIR    Pasta com os modelos .safetensors/.gguf
-  HIDRACHAT_MODEL_PATH    Caminho direto para o modelo (override)
+  HIDRACHAT_MODEL_ID      Repo HuggingFace ou pasta Diffusers local
+  HIDRACHAT_MODEL_PATH    Alias legado para HIDRACHAT_MODEL_ID
+  HIDRACHAT_MODELS_DIR    Pasta onde procurar modelos Diffusers locais
   HIDRACHAT_OUTPUT_DIR    Pasta para salvar imagens geradas (default: ./output)
   HIDRACHAT_POLL_SECONDS  Intervalo de polling (default: 3)
-  HIDRACHAT_N_GPU_LAYERS  Layers na GPU (default: 0 = CPU)
+  HIDRACHAT_DEVICE        cuda/cpu/auto (default: auto)
+  HIDRACHAT_TORCH_DTYPE   auto/float16/bfloat16/float32 (default: auto)
   HIDRACHAT_REGION        Região do worker (default: local)
 """
 
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 ROOT_DIR   = Path(__file__).resolve().parent
@@ -39,11 +41,14 @@ class Config:
     root_url:     str   = os.getenv("HIDRACHAT_ROOT_URL",    "https://hidrachat.cloud")
     name:         str   = os.getenv("HIDRACHAT_WORKER_NAME", "image-worker")
     owner_email:  str   = os.getenv("HIDRACHAT_WORKER_EMAIL", "")
-    sd_bin:       str   = os.getenv("HIDRACHAT_SD_BIN",      "sd")
-    model_path:   str   = os.getenv("HIDRACHAT_MODEL_PATH",  "")
+    model_id:     str   = os.getenv(
+        "HIDRACHAT_MODEL_ID",
+        os.getenv("HIDRACHAT_MODEL_PATH", "stabilityai/stable-diffusion-xl-base-1.0"),
+    )
     region:       str   = os.getenv("HIDRACHAT_REGION",      "local")
     poll_seconds: float = float(os.getenv("HIDRACHAT_POLL_SECONDS", "3"))
-    n_gpu_layers: int   = int(os.getenv("HIDRACHAT_N_GPU_LAYERS", "0"))
+    device:       str   = os.getenv("HIDRACHAT_DEVICE",      "auto")
+    torch_dtype:  str   = os.getenv("HIDRACHAT_TORCH_DTYPE", "auto")
     ram_gb:       float = float(os.getenv("HIDRACHAT_RAM_GB", "8"))
 
 
@@ -79,8 +84,19 @@ def detect_ram_gb() -> float:
     return float(os.getenv("HIDRACHAT_RAM_GB", "8"))
 
 
-def detect_gpu(n_gpu_layers: int) -> str:
-    if n_gpu_layers <= 0:
+def resolve_device(requested: str = "auto") -> str:
+    if requested != "auto":
+        return requested
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def detect_gpu(device: str) -> str:
+    if device != "cuda":
         return "CPU"
     try:
         r = subprocess.run(
@@ -91,56 +107,39 @@ def detect_gpu(n_gpu_layers: int) -> str:
             return r.stdout.strip().splitlines()[0].strip()
     except Exception:
         pass
-    return "Vulkan/GPU"
+    return "CUDA GPU"
 
 
 # ─── Model discovery ─────────────────────────────────────────────────────────
-
-def find_sd_binary() -> str:
-    env = os.getenv("HIDRACHAT_SD_BIN")
-    if env:
-        return env
-    candidates = [
-        ROOT_DIR / "stable-diffusion.cpp" / "build" / "bin" / "sd",
-        ROOT_DIR / "stable-diffusion.cpp" / "build" / "bin" / "Release" / "sd.exe",
-        ROOT_DIR / "sd",
-        ROOT_DIR / "sd.exe",
-    ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-    return "sd"
-
 
 def find_models() -> list[Path]:
     models_dir = Path(os.getenv("HIDRACHAT_MODELS_DIR", str(ROOT_DIR / "models")))
     if not models_dir.exists():
         return []
-    exts = (".safetensors", ".ckpt", ".gguf")
-    return sorted(
-        (p for p in models_dir.rglob("*") if p.suffix.lower() in exts),
-        key=lambda p: p.name.lower(),
-    )
+    exts = (".safetensors", ".ckpt")
+    found = [p for p in models_dir.rglob("*") if p.suffix.lower() in exts]
+    found.extend(p.parent for p in models_dir.rglob("model_index.json"))
+    return sorted(set(found), key=lambda p: str(p).lower())
 
 
-def choose_model() -> Path:
-    env = os.getenv("HIDRACHAT_MODEL_PATH")
+def choose_model(default_model_id: str) -> str:
+    env = os.getenv("HIDRACHAT_MODEL_ID") or os.getenv("HIDRACHAT_MODEL_PATH")
     if env:
-        return Path(env)
+        return env
     models = find_models()
     if not models:
-        raise RuntimeError(
-            "Nenhum modelo encontrado em models/. "
-            "Coloque um .safetensors/.gguf em models/ ou defina HIDRACHAT_MODEL_PATH."
-        )
+        return default_model_id
     print("\nModelos encontrados:")
     for i, m in enumerate(models, 1):
-        mb = m.stat().st_size / (1024 * 1024)
-        print(f"  {i}. {m.name} ({mb:.0f} MB)")
+        if m.is_dir():
+            print(f"  {i}. {m}")
+        else:
+            mb = m.stat().st_size / (1024 * 1024)
+            print(f"  {i}. {m.name} ({mb:.0f} MB)")
     while True:
         choice = input(f"Escolha o modelo [1-{len(models)}]: ").strip()
         if choice.isdigit() and 1 <= int(choice) <= len(models):
-            return models[int(choice) - 1]
+            return str(models[int(choice) - 1])
         print("Opção inválida.")
 
 
@@ -160,59 +159,102 @@ NEGATIVE_PROMPT = (
     "signature, extra limbs, disfigured, deformed"
 )
 
+PIPELINE: Any | None = None
+
+
+def resolve_torch_dtype(dtype_name: str, device: str) -> Any:
+    import torch
+
+    if dtype_name == "float16":
+        return torch.float16
+    if dtype_name == "bfloat16":
+        return torch.bfloat16
+    if dtype_name == "float32":
+        return torch.float32
+    return torch.float16 if device == "cuda" else torch.float32
+
+
+def load_pipeline(cfg: Config) -> Any:
+    global PIPELINE
+    if PIPELINE is not None:
+        return PIPELINE
+
+    import torch
+    from diffusers import AutoPipelineForText2Image
+
+    cfg.device = resolve_device(cfg.device)
+    dtype = resolve_torch_dtype(cfg.torch_dtype, cfg.device)
+    model_ref = Path(cfg.model_id)
+    load_kwargs = {
+        "torch_dtype": dtype,
+        "use_safetensors": True,
+    }
+
+    print(f"Carregando Diffusers: {cfg.model_id}")
+    if model_ref.exists() and model_ref.is_file():
+        pipe = AutoPipelineForText2Image.from_single_file(str(model_ref), **load_kwargs)
+    else:
+        pipe = AutoPipelineForText2Image.from_pretrained(cfg.model_id, **load_kwargs)
+
+    if cfg.device == "cuda":
+        pipe = pipe.to("cuda")
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            pass
+    else:
+        pipe = pipe.to("cpu")
+        pipe.enable_attention_slicing()
+
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+
+    PIPELINE = pipe
+    return PIPELINE
+
 
 def generate_image(cfg: Config, prompt: str, constraints: dict) -> bytes:
     width  = int(constraints.get("width",  512))
     height = int(constraints.get("height", 512))
     steps  = int(constraints.get("steps",  20))
     style  = constraints.get("style", "realistic")
+    guidance_scale = float(constraints.get("guidance_scale", 7.5))
+    seed = constraints.get("seed")
 
     suffix = STYLE_SUFFIXES.get(style, "")
     full_prompt = f"{prompt}, {suffix}" if suffix else prompt
 
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=OUTPUT_DIR) as tmp:
-        out_path = tmp.name
+    print(f"  prompt: {full_prompt[:80]}...")
+    print(f"  size: {width}x{height}  steps: {steps}  style: {style}")
 
-    cmd = [
-        cfg.sd_bin,
-        "-m", cfg.model_path,
-        "-p", full_prompt,
-        "--negative-prompt", NEGATIVE_PROMPT,
-        "-W", str(width),
-        "-H", str(height),
-        "--steps", str(steps),
-        "-o", out_path,
-        "--verbose",
-    ]
-    if cfg.n_gpu_layers > 0:
-        cmd.extend(["--n-gpu-layers", str(cfg.n_gpu_layers)])
+    pipe = load_pipeline(cfg)
+    generator = None
+    if seed is not None:
+        import torch
 
-    print(f"  prompt: {full_prompt[:80]}…")
-    print(f"  size: {width}×{height}  steps: {steps}  style: {style}")
+        generator = torch.Generator(device=cfg.device).manual_seed(int(seed))
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or f"sd exited with {result.returncode}")
+    image = pipe(
+        prompt=full_prompt,
+        negative_prompt=NEGATIVE_PROMPT,
+        width=width,
+        height=height,
+        num_inference_steps=steps,
+        guidance_scale=guidance_scale,
+        generator=generator,
+    ).images[0]
 
-    img_path = Path(out_path)
-    if not img_path.exists() or img_path.stat().st_size == 0:
-        # stable-diffusion.cpp appends _001 suffix sometimes
-        candidates = list(OUTPUT_DIR.glob(img_path.stem + "*.png"))
-        if candidates:
-            img_path = max(candidates, key=lambda p: p.stat().st_mtime)
-        else:
-            raise RuntimeError("sd não gerou arquivo de saída")
-
-    data = img_path.read_bytes()
-    img_path.unlink(missing_ok=True)
-    return data
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # ─── Register & heartbeat ─────────────────────────────────────────────────────
 
 def register(cfg: Config) -> str:
     ram = detect_ram_gb()
-    gpu = detect_gpu(cfg.n_gpu_layers)
+    cfg.device = resolve_device(cfg.device)
+    gpu = detect_gpu(cfg.device)
     cfg.ram_gb = ram
     print(f"RAM: {ram} GB  |  Backend: {gpu}")
     res = post_json(
@@ -222,7 +264,7 @@ def register(cfg: Config) -> str:
             "owner_email":      cfg.owner_email,
             "worker_type":      "image",
             "region":           cfg.region,
-            "model_name":       Path(cfg.model_path).stem,
+            "model_name":       Path(cfg.model_id).name,
             "model_size":       "any",
             "ram_gb":           ram,
             "cpu_threads":      os.cpu_count() or 4,
@@ -248,12 +290,11 @@ def main() -> None:
     if not cfg.owner_email:
         cfg.owner_email = input("Email da conta HidraChat: ").strip().lower()
 
-    cfg.sd_bin    = find_sd_binary()
-    model_path    = choose_model()
-    cfg.model_path = str(model_path)
+    cfg.model_id = choose_model(cfg.model_id)
+    cfg.device = resolve_device(cfg.device)
 
-    print(f"\nBinário sd:   {cfg.sd_bin}")
-    print(f"Modelo:       {cfg.model_path}")
+    print(f"\nBackend:      Diffusers/PyTorch ({cfg.device})")
+    print(f"Modelo:       {cfg.model_id}")
     print(f"Servidor:     {cfg.root_url}\n")
 
     worker_id = register(cfg)
