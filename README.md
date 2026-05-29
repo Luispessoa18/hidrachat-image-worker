@@ -111,6 +111,16 @@ $env:HIDRACHAT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 python worker.py
 ```
 
+### Windows BAT com DreamShaper 8
+
+Para rodar nesta maquina com `Lykon/dreamshaper-8`, execute:
+
+```cmd
+run_dreamshaper8_windows.bat
+```
+
+Ele cria `.venv`, instala PyTorch CUDA/dependencias, baixa o modelo em `models\dreamshaper-8`, carrega na GPU, faz warm-up e so depois registra o worker.
+
 Se houver modelos locais em `models/`, o worker pergunta qual usar. Para rodar sem pergunta, defina `HIDRACHAT_MODEL_ID`.
 
 ---
