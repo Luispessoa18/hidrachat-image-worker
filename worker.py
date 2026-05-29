@@ -13,6 +13,8 @@ Variáveis de ambiente:
   HIDRACHAT_POLL_SECONDS  Intervalo de polling (default: 3)
   HIDRACHAT_DEVICE        cuda/cpu/auto (default: auto)
   HIDRACHAT_TORCH_DTYPE   auto/float16/bfloat16/float32 (default: auto)
+  HIDRACHAT_LOCAL_FILES_ONLY  1 para usar apenas modelo local/cache
+  HIDRACHAT_PRELOAD_MODEL     1 para carregar modelo antes de registrar
   HIDRACHAT_REGION        Região do worker (default: local)
 """
 
@@ -49,6 +51,8 @@ class Config:
     poll_seconds: float = float(os.getenv("HIDRACHAT_POLL_SECONDS", "3"))
     device:       str   = os.getenv("HIDRACHAT_DEVICE",      "auto")
     torch_dtype:  str   = os.getenv("HIDRACHAT_TORCH_DTYPE", "auto")
+    local_files_only: bool = os.getenv("HIDRACHAT_LOCAL_FILES_ONLY", "0") == "1"
+    preload_model: bool = os.getenv("HIDRACHAT_PRELOAD_MODEL", "0") == "1"
     ram_gb:       float = float(os.getenv("HIDRACHAT_RAM_GB", "8"))
 
 
@@ -174,6 +178,14 @@ def resolve_torch_dtype(dtype_name: str, device: str) -> Any:
     return torch.float16 if device == "cuda" else torch.float32
 
 
+def has_safetensors(model_ref: Path) -> bool:
+    if model_ref.is_file():
+        return model_ref.suffix.lower() == ".safetensors"
+    if model_ref.is_dir():
+        return any(model_ref.rglob("*.safetensors"))
+    return True
+
+
 def load_pipeline(cfg: Config) -> Any:
     global PIPELINE
     if PIPELINE is not None:
@@ -187,14 +199,21 @@ def load_pipeline(cfg: Config) -> Any:
     model_ref = Path(cfg.model_id)
     load_kwargs = {
         "torch_dtype": dtype,
-        "use_safetensors": True,
+        "use_safetensors": has_safetensors(model_ref),
     }
+    if cfg.local_files_only:
+        load_kwargs["local_files_only"] = True
 
     print(f"Carregando Diffusers: {cfg.model_id}")
     if model_ref.exists() and model_ref.is_file():
         pipe = AutoPipelineForText2Image.from_single_file(str(model_ref), **load_kwargs)
     else:
-        pipe = AutoPipelineForText2Image.from_pretrained(cfg.model_id, **load_kwargs)
+        pipe = AutoPipelineForText2Image.from_pretrained(
+            cfg.model_id,
+            safety_checker=None,
+            requires_safety_checker=False,
+            **load_kwargs,
+        )
 
     if cfg.device == "cuda":
         pipe = pipe.to("cuda")
@@ -296,6 +315,10 @@ def main() -> None:
     print(f"\nBackend:      Diffusers/PyTorch ({cfg.device})")
     print(f"Modelo:       {cfg.model_id}")
     print(f"Servidor:     {cfg.root_url}\n")
+
+    if cfg.preload_model:
+        load_pipeline(cfg)
+        print("Modelo carregado antes do registro.\n")
 
     worker_id = register(cfg)
     print(f"Worker registrado: {worker_id}\n")

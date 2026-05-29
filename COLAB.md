@@ -17,9 +17,15 @@ Use runtime com GPU: `Runtime > Change runtime type > T4/A100 GPU`.
 
 ```python
 %env HIDRACHAT_WORKER_EMAIL=luispessoa18@gmail.com
-%env HIDRACHAT_MODEL_ID=runwayml/stable-diffusion-v1-5
+%env HIDRACHAT_MODEL_ID=/content/hidrachat-image-worker/models/sd15
 %env HIDRACHAT_DEVICE=cuda
 %env HIDRACHAT_WORKER_NAME=image-worker-colab
+%env HIDRACHAT_LOCAL_FILES_ONLY=1
+%env HIDRACHAT_PRELOAD_MODEL=1
+```
+
+```python
+!python download_model.py --model runwayml/stable-diffusion-v1-5 --output /content/hidrachat-image-worker/models/sd15
 ```
 
 ```python
@@ -33,7 +39,7 @@ from colab_worker import start
 
 start(
     email="luispessoa18@gmail.com",
-    model_id="runwayml/stable-diffusion-v1-5",
+    model_id="/content/hidrachat-image-worker/models/sd15",
     device="cuda",
 )
 ```
@@ -44,7 +50,7 @@ start(
 MODEL_ID = "runwayml/stable-diffusion-v1-5"
 LOCAL_MODEL_DIR = "/content/hidrachat-image-worker/models/sd15"
 
-!huggingface-cli download {MODEL_ID} --local-dir {LOCAL_MODEL_DIR} --local-dir-use-symlinks False
+!python download_model.py --model {MODEL_ID} --output {LOCAL_MODEL_DIR}
 %env HIDRACHAT_MODEL_ID=/content/hidrachat-image-worker/models/sd15
 ```
 

@@ -3,12 +3,12 @@ Entrada simples para rodar o HidraImg Worker no Google Colab.
 
 Uso por variaveis de ambiente:
   HIDRACHAT_WORKER_EMAIL=voce@email.com \
-  HIDRACHAT_MODEL_ID=stabilityai/stable-diffusion-xl-base-1.0 \
+  HIDRACHAT_MODEL_ID=/content/hidrachat-image-worker/models/sd15 \
   python colab_worker.py
 
 Uso por import no notebook:
   from colab_worker import start
-  start(email="voce@email.com", model_id="stabilityai/stable-diffusion-xl-base-1.0")
+  start(email="voce@email.com", model_id="/content/hidrachat-image-worker/models/sd15")
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import os
 from typing import Any
 
 
-DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+DEFAULT_MODEL_ID = "runwayml/stable-diffusion-v1-5"
 
 
 def configure(
@@ -31,6 +31,8 @@ def configure(
     worker_name: str = "image-worker-colab",
     poll_seconds: float = 3,
     region: str = "colab",
+    local_files_only: bool = True,
+    preload_model: bool = True,
 ) -> None:
     if email:
         os.environ["HIDRACHAT_WORKER_EMAIL"] = email
@@ -44,6 +46,8 @@ def configure(
     os.environ["HIDRACHAT_WORKER_NAME"] = worker_name
     os.environ["HIDRACHAT_POLL_SECONDS"] = str(poll_seconds)
     os.environ["HIDRACHAT_REGION"] = region
+    os.environ["HIDRACHAT_LOCAL_FILES_ONLY"] = "1" if local_files_only else "0"
+    os.environ["HIDRACHAT_PRELOAD_MODEL"] = "1" if preload_model else "0"
 
 
 def start(**kwargs: Any) -> None:
@@ -63,6 +67,8 @@ def main() -> None:
     parser.add_argument("--name", default=os.getenv("HIDRACHAT_WORKER_NAME", "image-worker-colab"))
     parser.add_argument("--poll-seconds", type=float, default=float(os.getenv("HIDRACHAT_POLL_SECONDS", "3")))
     parser.add_argument("--region", default=os.getenv("HIDRACHAT_REGION", "colab"))
+    parser.add_argument("--online-model", action="store_true", help="Permite baixar/cachear modelo durante o start")
+    parser.add_argument("--no-preload", action="store_true", help="Registra antes de carregar o modelo")
     args = parser.parse_args()
 
     if not args.email:
@@ -77,6 +83,8 @@ def main() -> None:
         worker_name=args.name,
         poll_seconds=args.poll_seconds,
         region=args.region,
+        local_files_only=not args.online_model,
+        preload_model=not args.no_preload,
     )
 
 

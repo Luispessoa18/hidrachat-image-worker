@@ -77,8 +77,11 @@ Abra o notebook [HidraImg_Colab.ipynb](HidraImg_Colab.ipynb) no Colab, ou veja [
 
 ```python
 %env HIDRACHAT_WORKER_EMAIL=luispessoa18@gmail.com
-%env HIDRACHAT_MODEL_ID=runwayml/stable-diffusion-v1-5
+%env HIDRACHAT_MODEL_ID=/content/hidrachat-image-worker/models/sd15
 %env HIDRACHAT_DEVICE=cuda
+%env HIDRACHAT_LOCAL_FILES_ONLY=1
+%env HIDRACHAT_PRELOAD_MODEL=1
+!python download_model.py --model runwayml/stable-diffusion-v1-5 --output /content/hidrachat-image-worker/models/sd15
 !python colab_worker.py
 ```
 
